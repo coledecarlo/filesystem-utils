@@ -2,13 +2,27 @@ import sqlite3
 import stat
 import json
 import hashlib
+import zlib
 from pathlib import Path
 from typing import Callable, Any, Optional, Self
+
+class crc32:
+    digest_size = 4
+
+    def __init__(self):
+        self.state = 0
+
+    def update(self, b: bytes):
+        self.state = zlib.crc32(b, self.state)
+
+    def digest(self) -> bytes:
+        return self.state.to_bytes(4, "big")
 
 BUFFER_SIZE = 1 << 18
 MAX_QUEUE_SIZE = 1 << 10
 STATE_DUMP_FILE = "tasks.json"
-HashType = hashlib.sha256
+get_hasher = lambda : hashlib.md5(usedforsecurity = False)
+DIGEST_LENGTH = get_hasher().digest_size
 
 class DirData:
     def __init__(self):
@@ -22,8 +36,8 @@ class DirData:
 
     def get_hash(self) -> bytes:
         if self.error:
-            return b"\0" * 32
-        hasher = HashType()
+            return b"\0" * DIGEST_LENGTH
+        hasher = get_hasher()
         hasher.update(f"{len(self.children)}:".encode("utf-8"))
         for name, is_dir, size, hash in sorted(self.children):
             if is_dir:
@@ -63,7 +77,7 @@ class Task:
         raise NotImplementedError()
 
     @classmethod
-    def from_json(cls, entry: dict[str, Any]) -> Self:
+    def from_json(cls, entry: dict[str, Any]) -> tuple[Callable[[...], Self], list[int]]:
         match entry["type"]:
             case "scan_task":
                 return ScanTask.from_json(entry["state"])
@@ -226,7 +240,7 @@ class ScanTask(Task):
                 data.error = True
         else:
             if stat.S_ISLNK(result.st_mode):
-                hasher = HashType()
+                hasher = get_hasher()
                 hasher.update(str(self.path.readlink()).encode("utf-8"))
                 hash = hasher.digest()
             else:
@@ -235,7 +249,7 @@ class ScanTask(Task):
                 if manager.verbose:
                     print(f"Scanning file {self.path} (size = {result.st_size})")
                 with self.path.open("rb") as file:
-                    hash = hashlib.file_digest(file, HashType).digest()
+                    hash = hashlib.file_digest(file, get_hasher).digest()
             if manager.verbose:
                 print(f"Queueing file {self.path}")
             manager.insert_file(self.parent, result.st_mode, self.path.name, result.st_size, hash)
@@ -285,5 +299,6 @@ if __name__ == "__main__":
     parser.add_argument("--database", default = "filesystem.db")
     parser.add_argument("--verbose", action = "store_true")
     parser.add_argument("--restore", default = None)
+    parser.add_argument("--hash-type", default = "md5")
     args = parser.parse_args()
     generate_db(args.path, args.database, args.verbose, args.restore)
