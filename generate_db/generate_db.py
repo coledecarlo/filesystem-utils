@@ -13,19 +13,21 @@ HashType = hashlib.sha256
 class DirData:
     def __init__(self):
         self.size = 0
-        self.children: list[tuple[str, int, bytes]] = []
+        self.children: list[tuple[str, bool, int, bytes]] = []
         self.error = False
 
-    def update(self, name: str, size: int, hash: bytes):
+    def update(self, name: str, is_dir: bool, size: int, hash: bytes):
         self.size += size
-        self.children.append((name, size, hash))
+        self.children.append((name, is_dir, size, hash))
 
     def get_hash(self) -> bytes:
         if self.error:
             return b"\0" * 32
         hasher = HashType()
         hasher.update(f"{len(self.children)}:".encode("utf-8"))
-        for name, size, hash in sorted(self.children):
+        for name, is_dir, size, hash in sorted(self.children):
+            if is_dir:
+                hasher.update(b"d")
             hasher.update(f"{len(name)}:{name}".encode("utf-8"))
             size = str(size)
             hasher.update(f"{len(size)}:{size}".encode("utf-8"))
@@ -36,8 +38,8 @@ class DirData:
         return {
             "size": self.size,
             "children": [
-                [name, size, hash.hex()] 
-                for name, size, hash in self.children
+                [name, is_dir, size, hash.hex()] 
+                for name, is_dir, size, hash in self.children
             ],
             "error": self.error
         }
@@ -47,8 +49,8 @@ class DirData:
         result = cls()
         result.size = state["size"]
         result.children = [
-            (name, size, bytes.fromhex(hash))
-            for name, size, hash in state["children"]
+            (name, is_dir, size, bytes.fromhex(hash))
+            for name, is_dir, size, hash in state["children"]
         ]
         result.error = state["error"]
         return result
@@ -176,7 +178,7 @@ class FinishTask(Task):
         if manager.verbose:
             print(f"Updating {self.id}")
         manager.update(self.id, self.data.size, hash)
-        self.parent_data.update(self.name, self.data.size, hash)
+        self.parent_data.update(self.name, True, self.data.size, hash)
 
     def to_json(self) -> tuple[str, Callable[[int, int], dict[str, Any]], list[DirData]]:
         return (
@@ -237,7 +239,7 @@ class ScanTask(Task):
             if manager.verbose:
                 print(f"Queueing file {self.path}")
             manager.insert_file(self.parent, result.st_mode, self.path.name, result.st_size, hash)
-            self.parent_data.update(self.path.name, result.st_size, hash)
+            self.parent_data.update(self.path.name, False, result.st_size, hash)
 
     def to_json(self) -> tuple[str, Callable[[int], dict[str, Any]], list[DirData]]:
         return (
